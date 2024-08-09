@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>POC Passkey Authentication</title>
+  </head>
+  <body>
+    <h1>Passkey Authentication</h1>
+
+    <div id="errorElement"
+      style="border:1px solid red; background-color: pink; color: red; display: none; padding: 1rem;"></div>
+    <div id="successElement"
+      style="border:1px solid green; background-color: lightgreen; color: green; display: none; padding: 1rem;"></div>
+
+    <!-- Registration Form -->
+    <div>
+      <h2>Register</h2>
+      <form id="registerForm">
+        <input name="username" placeholder="Username" required type="text">
+        <input name="displayName" placeholder="Display Name" type="text">
+        <button type="submit">Register</button>
+      </form>
+    </div>
+
+    <!-- Authentication Form -->
+    <div>
+      <h2>Login</h2>
+      <form id="loginForm">
+        <input autocomplete="username webauthn" name="username" placeholder="Username" required type="text">
+        <button type="submit">Login</button>
+      </form>
+    </div>
+
+    <!-- Get User Info -->
+    <div>
+      <h2>User Info</h2>
+      <div id="userInfo"></div>
+      <button id="userInfoButton" type="submit">Get User Info</button>
+    </div>
+
+    <script>
+      const baseUrl = 'http://localhost:4455/api/auth';
+      const errorElement = document.getElementById('errorElement');
+      const successElement = document.getElementById('successElement');
+
+      // Handle Registration
+      document.getElementById('registerForm').addEventListener('submit', async (event) => {
+        errorElement.style.display = 'none';
+        successElement.style.display = 'none';
+        event.preventDefault();
+
+        const data = new FormData(event.target);
+        const displayName = data.get('displayName');
+        const username = data.get('username');
+        console.log('Registration initiated for', username);
+
+        // Send a registration request to the server
+        let registerResponse;
+        try {
+          registerResponse = await fetch(`${baseUrl}/register`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username })
+          });
+
+          if (!registerResponse.ok) {
+            throw new Error(`${registerResponse.status} ${registerResponse.statusText}`);
+          }
+        } catch (error) {
+          errorElement.textContent = error.message;
+          errorElement.style.display = 'block';
+          return;
+        }
+
+        const registrationOptions = await registerResponse.json();
+        console.log('Registration options received for', username, registrationOptions);
+
+        // Start the WebAuthn registration
+        registrationOptions.challenge = base64urlDecode(registrationOptions.challenge);
+        registrationOptions.user.id = base64urlDecode(registrationOptions.user.id);
+
+        const credential = await navigator.credentials.create({ publicKey: registrationOptions });
+        console.log('Credential created for', username, credential);
+
+        // Send the credential to the server for verification
+        const registrationCredentials = {
+          id: credential.id,
+          rawId: base64urlEncode(credential.rawId),
+          type: credential.type,
+          response: {
+            clientDataJSON: base64urlEncode(credential.response.clientDataJSON),
+            attestationObject: base64urlEncode(credential.response.attestationObject),
+          }
+        };
+        console.log('Verifying registration for', username, registrationCredentials);
+
+        try {
+          const verifyRegistrationResponse = await fetch(`${baseUrl}/verify-registration`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              credential: registrationCredentials,
+              displayName,
+              username,
+            })
+          });
+
+          if (!verifyRegistrationResponse.ok) {
+            throw new Error(`${verifyRegistrationResponse.status} ${verifyRegistrationResponse.statusText}`);
+          }
+        } catch (error) {
+          errorElement.textContent = error.message;
+          errorElement.style.display = 'block';
+          return;
+        }
+
+        console.log('Registration for', username, 'was successful!');
+        successElement.textContent = `Registration for "${username}" was successful!`;
+        successElement.style.display = 'block';
+      });
+
+      // Handle Authentication
+      document.getElementById('loginForm').addEventListener('submit', async (event) => {
+        errorElement.style.display = 'none';
+        successElement.style.display = 'none';
+        event.preventDefault();
+
+        const data = new FormData(event.target);
+        const username = data.get('username');
+        console.log('Authentication initiated for', username);
+
+        // Send an authentication request to the server
+        let authenticateResponse;
+        try {
+          authenticateResponse = await fetch(`${baseUrl}/authenticate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username })
+          });
+
+          if (!authenticateResponse.ok) {
+            throw new Error(`${authenticateResponse.status} ${authenticateResponse.statusText}`);
+          }
+        } catch (error) {
+          errorElement.textContent = error.message;
+          errorElement.style.display = 'block';
+          return;
+        }
+
+        const authenticateOptions = await authenticateResponse.json();
+        console.log('Authentication options received for', username, authenticateOptions);
+
+        // Start the WebAuthn authentication
+        authenticateOptions.challenge = base64urlDecode(authenticateOptions.challenge);
+        authenticateOptions.allowCredentials = authenticateOptions.allowCredentials.map(cred => ({
+          ...cred,
+          id: base64urlDecode(cred.id)
+        }));
+
+        const credential = await navigator.credentials.get({ publicKey: authenticateOptions });
+        console.log('Credential received for', username, credential);
+
+        // Send the credential to the server for verification
+        const authenticateCredentials = {
+          id: credential.id,
+          rawId: base64urlEncode(credential.rawId),
+          type: credential.type,
+          response: {
+            clientDataJSON: base64urlEncode(credential.response.clientDataJSON),
+            authenticatorData: base64urlEncode(credential.response.authenticatorData),
+            signature: base64urlEncode(credential.response.signature),
+            userHandle: credential.response.userHandle ? base64urlEncode(credential.response.userHandle) : null
+          }
+        };
+        console.log('Verifying authentication for', username, authenticateCredentials);
+
+        try {
+          const response = await fetch(`${baseUrl}/verify-authentication`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              credential: authenticateCredentials,
+              username,
+            })
+          });
+
+          if (!response.ok) {
+            throw new Error(`${response.status} ${response.statusText}`);
+          }
+        } catch (error) {
+          errorElement.textContent = error.message;
+          errorElement.style.display = 'block';
+          return;
+        }
+
+        console.log('Authentication for', username, 'was successful!');
+        successElement.textContent = `Authentication for "${username}" was successful!`;
+        successElement.style.display = 'block';
+      });
+
+      // Handle User Info
+      document.getElementById('userInfoButton').addEventListener('click', async () => {
+        errorElement.style.display = 'none';
+        successElement.style.display = 'none';
+
+        const userInfoElement = document.getElementById('userInfo');
+        userInfoElement.textContent = 'Loading...';
+
+        // Send a request to the server to get user info
+        let userInfoResponse;
+        try {
+          userInfoResponse = await fetch(`${baseUrl}/me`);
+
+          if (!userInfoResponse.ok) {
+            throw new Error(`${userInfoResponse.status} ${userInfoResponse.statusText}`);
+          }
+        } catch (error) {
+          errorElement.textContent = error.message;
+          errorElement.style.display = 'block';
+          userInfoElement.textContent = '';
+          return;
+        }
+
+        const userInfo = await userInfoResponse.json();
+        console.log('User info received', userInfo);
+        userInfoElement.textContent = JSON.stringify(userInfo, null, 2);
+      });
+
+      // Utility function to decode base64url
+      function base64urlDecode(input) {
+        const padding = '='.repeat((4 - input.length % 4) % 4);
+        const base64 = (input + padding).replace(/-/g, '+').replace(/_/g, '/');
+        return Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+      }
+
+      // Utility function to encode base64url
+      function base64urlEncode(input) {
+        const base64 = btoa(String.fromCharCode.apply(null, new Uint8Array(input)));
+        return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+      }
+    </script>
+  </body>
+</html>
